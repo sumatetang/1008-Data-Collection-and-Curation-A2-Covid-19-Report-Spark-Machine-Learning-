@@ -1,0 +1,96 @@
+hadoop fs -copyFromLocal COVID.csv /BigData/
+spark-shell --master yarn
+
+scala> :paste
+// Entering paste mode (ctrl-D to finish)
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{MulticlassClassificationEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.types.{IntegerType, DoubleType}
+
+import org.apache.spark.ml.regression.{LinearRegression}
+import org.apache.spark.ml.evaluation.{RegressionEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+
+val cov = spark.read
+ .format("csv")
+ .option("header", "true")
+ .load("hdfs://10.128.0.6/BigData/Case2.csv")
+
+
+val rawdata =cov.select(
+ col("Gender_index").cast(IntegerType), 
+col("Outbreak_index").cast(IntegerType), 
+col("C_Hospitalized_index").cast(IntegerType), 
+col("C_ICU_index").cast(IntegerType), 
+col("C_Intubated_index").cast(IntegerType), 
+ col("Outcome").alias("outcome"))
+.filter(!(col("Outcome")===lit("ACTIVE")))
+
+rawdata.show()
+
+-- "Gender_index","Outbreak_index","C_Hospitalized_index","C_ICU_index","C_Intubated_index" 
+ --"Outcome"
+
+var data=raw_dataset.withColumn("outcome",when(col("outcome")==="RESOLVED",lit("1").cast(IntegerType)).otherwise(lit("2").cast(IntegerType)))
+
+
+
+
+val Array(trainingData, testData) = data.randomSplit(Array(0.8, 0.2), 754) 
+
+
+
+
+val assembler = new VectorAssembler()
+ .setInputCols(Array("Gender_index","Outbreak_index","C_Hospitalized_index","C_ICU_index","C_Intubated_index"))
+ .setOutputCol("assembled-features")
+
+
+val rf = new RandomForestClassifier()
+ .setFeaturesCol("assembled-features")
+ .setLabelCol("outcome")
+ .setSeed(1234)
+
+val pipeline = new Pipeline()
+  .setStages(Array(assembler, rf))
+
+
+val evaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("outcome")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+
+/*
+val evaluator = new BinaryClassificationEvaluator()
+  .setLabelCol("outcome")
+  .setMetricName("precision")
+*/
+
+
+val paramGrid = new ParamGridBuilder()  
+  .addGrid(rf.maxDepth, Array(3, 5))
+  .addGrid(rf.impurity, Array("entropy","gini")).build()
+
+
+val cross_validator = new CrossValidator()
+  .setEstimator(pipeline)
+  .setEvaluator(evaluator)
+  .setEstimatorParamMaps(paramGrid)
+  .setNumFolds(3)
+
+val Model = cross_validator.fit(trainingData)
+
+
+val predict = Model.transform(testData)
+
+
+val accuracy = evaluator.evaluate(predict)
+
+println("Accuracy based on test data = " + accuracy)
